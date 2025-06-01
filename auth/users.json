@@ -1,9 +1,12 @@
-{
-  "users": [
-    {
-      "username": "abc123",
-      "password": "test123",
-      "expires": "2025-06-10T23:59:59"
-    }
-  ]
-}
+[
+  {
+    "username": "user_3lq8n",
+    "password": "yufxjc9b",
+    "expires": "2025-06-08T23:59:59"
+  },
+  {
+    "username": "user_72yuf",
+    "password": "hm34vl3e",
+    "expires": "2025-06-08T23:59:59"
+  }
+]
