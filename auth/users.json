@@ -24,6 +24,11 @@
       "username": "user_zcied",
       "password": "v1g3y5z5",
       "expires": "2025-06-08T23:59:59"
+    },
+    {
+      "username": "user_8q3wp9",
+      "expires": "2025-06-08T23:59:59",
+      "signature": "3abc43c8968c3e31af03a5fdcfe28c3bd6304035cb7093911673f28c42664c7e"
     }
   ]
 }
