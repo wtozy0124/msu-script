@@ -1,0 +1,9 @@
+{
+  "users": [
+    {
+      "username": "abc123",
+      "password": "test123",
+      "expires": "2025-06-10T23:59:59"
+    }
+  ]
+}
