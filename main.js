@@ -1,9 +1,18 @@
 (async function monitor() {
   'use strict';
 
+  // 🕒 限时授权：到期时间（含当天）
+  const expireDate = new Date("2025-06-05T23:59:59"); // 👈 修改这里控制截止时间
+  const now = new Date();
+  if (now > expireDate) {
+    alert("授权已过期，请联系作者续期");
+    return;
+  }
+
+  // 🔐 授权密钥校验（可换密钥）
   const token = localStorage.getItem("my_script_token");
   if (!token || token !== "YOUR_SECRET_KEY") {
-    console.warn("🚫 无授权，脚本停止执行");
+    alert("未授权或密钥错误，已停止运行");
     return;
   }
 
@@ -17,14 +26,14 @@
   function autoBuy(priceWei, quantity) {
     try {
       const input = document.querySelector('#consumable-buy-form input');
-      if (!input) return console.warn("❌ 无数量输入框");
+      if (!input) return;
 
       const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
       nativeInputValueSetter.call(input, quantity);
       input.dispatchEvent(new Event('input', { bubbles: true }));
 
       const buyBtn = document.querySelector('#consumable-buy-form button');
-      if (!buyBtn) return console.warn("❌ 无 Buy 按钮");
+      if (!buyBtn) return;
 
       const redX = document.querySelector('#insufficient-balance-modal > div > button');
       if (redX && redX.offsetParent !== null && !redX.disabled) {
