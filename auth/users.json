@@ -1,9 +1,9 @@
 {
   "users": [
     {
-      "username": "user001",
-      "expired_at": "2025-06-30",
-      "machine_code": "e4a2d91b1ee0a8f..."  // ✅ 本机机器码（加密后）
+      "username": "user_jfrf82",
+      "expired_at": "2025-06-11T09:08:10.743Z",
+      "machine_code": "未绑定"
     }
   ]
 }
