@@ -1,0 +1,493 @@
+// ==UserScript==
+// @name         MSU 自动交易整合版 v2.7 (定时策略测试版)
+// @namespace    http://tampermonkey.net/
+// @version      2.7
+// @description  自动购买 + 自动售出 + 倒计时控制 + 按您的要求修改为固定延时策略
+// @match        https://msu.io/marketplace/ft/*
+// @grant        none
+// ==/UserScript==
+
+/* global BigInt */
+
+
+
+(async function () {
+  'use strict';
+
+  const storageKeyPrefix = 'msu_auto_';
+  let isBuying = false;
+  let isRunning = localStorage.getItem(storageKeyPrefix + 'running') === 'true';
+  let targetPrice = parseInt(localStorage.getItem(storageKeyPrefix + 'price') || '310');
+  let premiumPrice = parseInt(localStorage.getItem(storageKeyPrefix + 'premium') || '0');
+  let sellPrice = parseInt(localStorage.getItem("msu_auto_sell") || "0");
+  let collapsed = false;
+  let greenErrorCooldown = false;
+  let greenErrorTimer = 0;
+    // 模块：识别“Connect Wallet”弹窗并自动点击 MetaMask 按钮
+  const autoClickMetaMask = setInterval(() => {
+    const allDivs = document.querySelectorAll('div');
+    let foundBox = null;
+
+    allDivs.forEach(div => {
+      if (
+        div.innerText.includes('Connect Wallet') &&
+        div.innerText.includes('MapleStory Universe')
+      ) {
+        foundBox = div;
+      }
+    });
+
+    if (foundBox) {
+      const button = foundBox.querySelector('button');
+      if (button) {
+        button.click();
+        console.log('✅ 已点击 MetaMask 按钮');
+        clearInterval(autoClickMetaMask); // 只点一次
+      }
+    }
+  }, 1000); // 每秒检测一次
+
+  let mainLoopRunning = false;
+  let countdown = 1500;
+
+  const countdownKey = 'msu_auto_countdown';
+  const savedCountdown = parseInt(localStorage.getItem(countdownKey));
+  if (!isNaN(savedCountdown)) {
+     countdown = savedCountdown;
+     console.log("✅ 恢复 countdown =", countdown);
+     localStorage.removeItem(countdownKey); // 避免下次误用
+  }
+
+
+  const pathname = window.location.pathname;
+  const matchedId = pathname.match(/ft\/(\d+)/);
+  if (!matchedId) return;
+  const itemId = matchedId[1];
+
+  const ui = document.createElement('div');
+  ui.style = `
+    position:fixed;right:20px;bottom:20px;width:240px;z-index:9999;
+    background:#fff;color:#000;border:1px solid #000;padding:10px;
+    border-radius:8px;font-size:14px;box-shadow:2px 2px 8px rgba(0,0,0,0.2);
+  `;
+  ui.innerHTML = `
+    <style>
+      .msu-ui-block {
+        margin-top: 6px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        font-size: 13px;
+      }
+      .msu-ui-block input {
+        width: 90px;
+        padding: 2px 4px;
+        border: 1px solid #000;
+        border-radius: 4px;
+        font-size: 13px;
+      }
+      .msu-ui-btn {
+        padding: 4px 10px;
+        border-radius: 4px;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .start-btn { background: #dff0d8; border: 1px solid #4cae4c; }
+      .stop-btn { background: #f2dede; border: 1px solid #d43f3a; }
+      .status-green { color: green; font-weight: bold; }
+      .status-red { color: red; font-weight: bold; }
+    </style>
+    <div id="mainUI">
+      <div class="msu-ui-block">🎯 购买价格：<input id="targetInput" type="number" value="${targetPrice}" /></div>
+      <div class="msu-ui-block">💰 购买溢价：<input id="premiumInput" type="number" value="${premiumPrice}" /></div>
+      <div class="msu-ui-block">💰 售出价格：<input id="sellPriceInput" type="number" value="${sellPrice}" /></div>
+      <div class="msu-ui-block">📈 预期利润：<span id="profitDisplay">--</span></div>
+      <div class="msu-ui-block">⏱️ 下次售出：<span id="countdownText">--</span></div>
+      <div class="msu-ui-block">📉 当前价格：<span id="priceInfo">--</span></div>
+      <div class="msu-ui-block">
+        ✅ <button id="startBtn" class="msu-ui-btn start-btn">启动</button>
+        ⛔ <button id="stopBtn" class="msu-ui-btn stop-btn">停止</button>
+      </div>
+      <div class="msu-ui-block">📌 当前状态：<span id="statusDisplay" class="${isRunning ? 'status-green' : 'status-red'}">${isRunning ? '启动中' : '停止'}</span></div>
+      <div class="msu-ui-block" id="cooldownDisplay"></div>
+    </div>
+    <div class="msu-ui-block"><button id="toggleUI" class="msu-ui-btn" style="border:1px solid #000;">🔽 收起面板</button></div>
+  `;
+
+  document.body.appendChild(ui);
+  updateProfitDisplay(); // 页面加载后首次计算
+
+    // 每10分钟刷新页面一次（不影响 countdown）
+setInterval(() => {
+  if (isRunning) {
+    localStorage.setItem(countdownKey, countdown.toString());
+    console.log("🔁 10分钟到，保存 countdown =", countdown, "即将刷新页面");
+    location.reload();
+  }
+}, 600000); // 600000ms = 10分钟
+
+
+  const countdownText = document.getElementById('countdownText');
+  const cooldownDisplay = document.getElementById('cooldownDisplay');
+  const priceInfoDisplay = document.getElementById('priceInfo');
+
+  function updateProfitDisplay() {
+  if (isNaN(targetPrice) || isNaN(sellPrice)) {
+    document.getElementById("profitDisplay").textContent = "--";
+    return;
+  }
+  const afterTax = sellPrice * 0.95;
+  const profit = Math.floor(afterTax - targetPrice);
+  document.getElementById("profitDisplay").textContent = profit;
+}
+
+
+  function updateCooldownDisplay() {
+    cooldownDisplay.textContent = greenErrorCooldown ? `⏳ 绿色报错冷却中：${greenErrorTimer}s` : '';
+  }
+
+  document.getElementById('targetInput').onchange = (e) => {
+    const val = parseInt(e.target.value);
+    if (!isNaN(val)) {
+      targetPrice = val;
+      localStorage.setItem(storageKeyPrefix + 'price', targetPrice);
+    }
+    e.target.value = targetPrice;
+    updateProfitDisplay();
+  };
+  document.getElementById('premiumInput').onchange = (e) => {
+    const val = parseInt(e.target.value);
+    if (!isNaN(val) && val >= 0) {
+      premiumPrice = val;
+      localStorage.setItem(storageKeyPrefix + 'premium', premiumPrice);
+    }
+    e.target.value = premiumPrice;
+  };
+  document.getElementById('sellPriceInput').onchange = (e) => {
+    const val = parseInt(e.target.value);
+    if (!isNaN(val)) {
+      sellPrice = val;
+      localStorage.setItem("msu_auto_sell", sellPrice);
+    }
+    e.target.value = sellPrice;
+    updateProfitDisplay();
+
+  };
+  document.getElementById('startBtn').onclick = () => {
+    isRunning = true;
+    localStorage.setItem(storageKeyPrefix + 'running', 'true');
+    document.getElementById('statusDisplay').textContent = '✅ 当前状态：启动中';
+    if (!mainLoopRunning) mainLoop();
+  };
+  document.getElementById('stopBtn').onclick = () => {
+    isRunning = false;
+    localStorage.setItem(storageKeyPrefix + 'running', 'false');
+    document.getElementById('statusDisplay').textContent = '⛔ 当前状态：停止';
+  };
+  document.getElementById('toggleUI').onclick = () => {
+    collapsed = !collapsed;
+    document.getElementById('mainUI').style.display = collapsed ? 'none' : 'block';
+    document.getElementById('toggleUI').textContent = collapsed ? '🔼 展开面板' : '🔽 收起面板';
+  };
+
+  // 倒计时控制 + 售出
+  setInterval(() => {
+    if (!isRunning || sellPrice <= 0) {
+      countdownText.textContent = '--';
+      return;
+    }
+    countdown--;
+    const min = Math.floor(countdown / 60);
+    const sec = countdown % 60;
+    countdownText.textContent = `${min}分${sec.toString().padStart(2, '0')}秒`;
+    if (countdown <= 0) {
+      console.log("⏰ 倒计时结束，执行售出");
+      startSellProcess(sellPrice);
+      countdown = 1500;
+    }
+  }, 1000);
+
+  async function mainLoop() {
+    mainLoopRunning = true;
+    while (isRunning) {
+      try {
+        if (isBuying || greenErrorCooldown || countdown <= 30) {
+          await new Promise(r => setTimeout(r, 1000));
+          continue;
+        }
+
+        const res = await fetch(`https://msu.io/marketplace/api/marketplace/explore/consumables/${itemId}/summaries`);
+        if (!res.ok || !res.headers.get("content-type")?.includes("json")) {
+          await new Promise(r => setTimeout(r, 10000));
+          continue;
+        }
+
+        const data = await res.json();
+        const summaries = data.summaries || [];
+        if (summaries.length > 0) {
+          const min = summaries.reduce((a, b) => (BigInt(a.priceWei) < BigInt(b.priceWei) ? a : b));
+          const realPrice = Math.round(Number(min.priceWei) / 1e18);
+          priceInfoDisplay.textContent = `当前价：${realPrice}`;
+          if (realPrice <= targetPrice) {
+            isBuying = true;
+            autoBuy(min.priceWei, min.quantity, realPrice);
+          }
+        }
+      } catch (e) {
+        isBuying = false;
+      }
+      await new Promise(r => setTimeout(r, 7000 + Math.random() * 1000));
+    }
+    mainLoopRunning = false;
+  }
+
+function autoBuy(priceWei, quantity, expectedPrice) {
+  try {
+    const input = document.querySelector('#consumable-buy-form input');
+    if (!input) { isBuying = false; return; }
+
+    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    nativeInputValueSetter.call(input, quantity);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+
+    const buyBtn = document.querySelector('#consumable-buy-form button');
+    if (!buyBtn) { isBuying = false; return; }
+
+    const redX = document.querySelector('#insufficient-balance-modal > div > button');
+    if (redX && redX.offsetParent !== null && !redX.disabled) {
+      redX.click();
+      isBuying = false;
+      return;
+    }
+
+    const greenX = document.querySelector('[id^="b_"] > div > button');
+    if (greenX && greenX.offsetParent !== null && !greenX.disabled) {
+      greenX.click();
+      isBuying = false;
+      triggerGreenErrorCooldown();
+      return;
+    }
+
+      setTimeout(() => {
+          buyBtn.click();  // 点击 Buy
+
+          let confirmWait = 0;
+          const waitConfirm = setInterval(() => {
+              let confirmBtn = document.querySelector(
+                  '#purchase-consumables-modal > div > div > div._13upqul3._13upqul1.pbjki00 > button'
+              );
+              if (!confirmBtn) {
+                  confirmBtn = [...document.querySelectorAll("#purchase-consumables-modal button")]
+                      .find(btn => btn.innerText.includes("Confirm"));
+              }
+
+              if (confirmBtn && confirmBtn.offsetParent !== null) {
+                  clearInterval(waitConfirm);
+                  console.log("🟢 检测到确认弹窗，等待1秒后读取价格...");
+
+                  // ▼▼▼ 改动点 1：按您的要求，替换为固定的1秒延时 ▼▼▼
+                  setTimeout(() => {
+                      console.log("...1秒延时结束，开始二次价格验证...");
+
+                      let actualModalPrice = null;
+                      const priceSelectors = [
+                          '#purchase-consumables-modal span[class*="bngdhoj"] > span',
+                          '#purchase-consumables-modal span[class*="DecimalPrice_decimalValue"]'
+                      ];
+
+                      // 遍历所有可能的选择器来找价格
+                      for (const selector of priceSelectors) {
+                          const priceElement = document.querySelector(selector);
+                          if (priceElement) {
+                              const priceText = priceElement.innerText.replace(/,/g, '');
+                              if (priceText) {
+                                  const parsedPrice = parseInt(priceText, 10);
+                                  if (!isNaN(parsedPrice)) {
+                                      actualModalPrice = parsedPrice;
+                                      break; // 找到就跳出循环
+                                  }
+                              }
+                          }
+                      }
+
+                      // --- 最终决策逻辑 ---
+                      if (actualModalPrice !== null && actualModalPrice <= (targetPrice + premiumPrice)) {
+                          console.log(`✅ 价格在容许范围内 (目标价+溢价: ${targetPrice + premiumPrice}, 实际: ${actualModalPrice}). 继续购买。`);
+                          realMouseClick(confirmBtn);
+
+                          // 您的“3秒卡死检查”逻辑，保持不变
+                          setTimeout(() => {
+                              const confirmStill = [...document.querySelectorAll("#purchase-consumables-modal button")]
+                              .find(btn => btn.innerText.includes("Confirm"));
+
+                              if (!confirmStill || confirmStill.offsetParent === null) {
+                                  console.log("✅ 确认按钮已消失，等待钱包签名中...");
+                                  setTimeout(() => {
+                                      const closeBtn = document.querySelector('#make-transaction-sign > div > button');
+                                      if (closeBtn && closeBtn.offsetParent !== null && !closeBtn.disabled) {
+                                          closeBtn.click();
+                                          console.log("✅ 已点击签名弹窗关闭按钮");
+                                      }
+                                      addRecord(Math.round(Number(priceWei) / 1e18), quantity);
+                                      isBuying = false;
+                                  }, 30000);
+                              } else {
+                                  console.warn("🟥 3 秒后确认按钮仍在，尝试关闭弹窗");
+                                  const closeBtn = document.evaluate(
+                                      '//*[@id="purchase-consumables-modal"]/div/button', document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null
+                                  ).singleNodeValue;
+                                  if (closeBtn && closeBtn.offsetParent !== null && !closeBtn.disabled) {
+                                      realMouseClick(closeBtn);
+                                      console.log("✅ 已强制关闭卡死弹窗");
+                                  } else {
+                                      console.log("⚠️ 找不到关闭按钮");
+                                  }
+                                  isBuying = false;
+                              }
+                          }, 8000);
+                      } else {
+                          // ▼▼▼ 改动点 2：按您的要求，价格不符时，等待4秒再关闭 ▼▼▼
+                          if (actualModalPrice === null) {
+                              console.warn(`❌ 未能读取到弹窗价格，为安全起见，4秒后关闭弹窗。`);
+                          } else {
+                              console.warn(`🟥 价格超出溢价范围，4秒后关闭弹窗！(上限: ${targetPrice + premiumPrice}, 实际: ${actualModalPrice})`);
+                          }
+
+                          setTimeout(() => {
+                              console.log("...4秒延时结束，执行关闭操作。");
+                              const closeBtn = document.evaluate(
+                                  '//*[@id="purchase-consumables-modal"]/div/button', document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null
+                              ).singleNodeValue;
+                              if (closeBtn && closeBtn.offsetParent !== null && !closeBtn.disabled) {
+                                  realMouseClick(closeBtn);
+                                  console.log("🔴 已点击关闭按钮，取消交易。");
+                              } else {
+                                  console.error("❌ 未能找到弹窗的关闭按钮！");
+                              }
+                              isBuying = false;
+                          }, 8000); // 4秒延时
+                      }
+                  }, 1000); // 1秒延时
+              } else {
+                  confirmWait += 500;
+                  if (confirmWait >= 15000) {
+                      clearInterval(waitConfirm);
+                      console.warn("⚠️ 超时未出现确认按钮，强制退出购买流程");
+                      const closeBtn = document.evaluate(
+                          '//*[@id="purchase-consumables-modal"]/div/button', document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null
+                      ).singleNodeValue;
+                      if (closeBtn && closeBtn.offsetParent !== null && !closeBtn.disabled) {
+                          realMouseClick(closeBtn);
+                          console.log("🔴 超时后，强制关闭可能存在的弹窗。");
+                      }
+                      isBuying = false;
+                  }
+              }
+          }, 500);
+      }, 500);
+  } catch (e) {
+      isBuying = false;
+      console.warn("⚠️ autoBuy 出错：", e);
+  }
+}
+
+
+  // ✅ 原版 v0.6 人工输入逻辑
+  function humanInput(el, value) {
+    el.focus();
+    el.select();
+    document.execCommand("insertText", false, value.toString());
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    console.log(`✍️ 模拟输入: ${value}`);
+  }
+
+  // ✅ 原版 v0.6 售出逻辑
+  function startSellProcess(sellPrice) {
+    console.log("🟡 售卖流程开始");
+
+    const sellTab = document.querySelector(
+      'body > div._1lniw0n2 > div > div > div._1a272vx2.z0h83i4._6swxj41eo.oeasfv1qc.oeasfvwo.oeasfvii.oeasfv1a6.oeasfv2e > section._18sp21p4._1kz7vuf6._1kz7vuf2u._1kz7vuf20._1kz7vuf1q._6swxj42bo._6swxj41gu.pbjki00.pbjki0nc._18sp21p0.zv8p3u0._6jsraw0._18sp21pc._3w91wn1.form > div.bid-header.pbjki00.pbjki020.pbjki0n6.pbjki05o.oeasfv1po.oeasfv1p2.oeasfvw0.oeasfvve.oeasfvg6.oeasfvfq.oeasfv1aw._48etwsm0._48etwslk > ul > li:nth-child(2)'
+    );
+
+    if (!sellTab) return console.warn("❌ 未找到 Tab");
+    sellTab.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    console.log("✅ 已点击 Sell Tab");
+
+    const formWait = setInterval(() => {
+      const qtySpan = document.querySelector('#consumable-sell-form > fieldset > p > span');
+      const qtyInput = document.querySelector('#consumable-sell-form input[name="quantity"]');
+      const priceInput = document.querySelector('#consumable-sell-form > fieldset > label input');
+      const sellBtn = document.querySelector('#consumable-sell-form > fieldset > button');
+
+      if (qtySpan && qtyInput && priceInput && sellBtn) {
+        clearInterval(formWait);
+        console.log("✅ 表单已加载");
+
+        const match = qtySpan.textContent.replace(/,/g, '').match(/\d+/);
+        if (!match) return console.warn("❌ 数量未获取");
+        const sellQty = match[0];
+
+        humanInput(priceInput, sellPrice);
+        setTimeout(() => {
+          humanInput(qtyInput, sellQty);
+
+          setTimeout(() => {
+            sellBtn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+            console.log("📤 已点击 Sell 提交");
+
+            const waitConfirm = setInterval(() => {
+              const confirmBtn = document.querySelector('#sale-consumables-modal > div > div > div._13upqul3._13upqul1.pbjki00 > button');
+              if (confirmBtn && confirmBtn.offsetParent !== null && !confirmBtn.disabled) {
+                confirmBtn.click();
+                clearInterval(waitConfirm);
+                console.log("✅ 已点击确认按钮");
+                setTimeout(() => {
+                  console.log("🔄 等待20秒后刷新页面");
+                  location.reload();
+                }, 20000);
+              }
+            }, 500);
+          }, 600);
+        }, 600);
+      }
+    }, 500);
+  }
+
+  function realMouseClick(el) {
+    const evt = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
+    el.dispatchEvent(evt);
+  }
+
+  function triggerGreenErrorCooldown() {
+    greenErrorCooldown = true;
+    greenErrorTimer = 180;
+    const timer = setInterval(() => {
+      greenErrorTimer--;
+      updateCooldownDisplay();
+      if (greenErrorTimer <= 0) {
+        greenErrorCooldown = false;
+        clearInterval(timer);
+        updateCooldownDisplay();
+      }
+    }, 1000);
+    updateCooldownDisplay();
+    fetch("http://127.0.0.1:30304/start-change-ip").catch(() => {});
+  }
+
+  function addRecord(price, quantity) {
+    const now = new Date().toLocaleString();
+    const total = price * quantity;
+    const body = JSON.stringify({ time: now, price, quantity, total });
+    fetch("http://127.0.0.1:30303/record", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body
+    }).catch(() => {});
+  }
+if (isRunning && !mainLoopRunning) mainLoop();
+
+
+})();
+
+
+language race where violin this genuine skill size maze lonely female bulb
